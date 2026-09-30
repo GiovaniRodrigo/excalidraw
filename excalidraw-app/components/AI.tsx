@@ -1,152 +1,45 @@
-import {
-  DiagramToCodePlugin,
-  exportToBlob,
-  getNonDeletedElements,
-  getTextFromElements,
-  MIME_TYPES,
-  parseSSEStream,
-  TTDDialog,
-  TTDStreamFetch,
-} from "@excalidraw/excalidraw";
-import { getDataURL } from "@excalidraw/excalidraw/data/blob";
-import { safelyParseJSON } from "@excalidraw/common";
+import { DiagramToCodePlugin, TTDDialog } from "@excalidraw/excalidraw";
+import { settingsIcon } from "@excalidraw/excalidraw/components/icons";
 
-import type { StreamChunk } from "@excalidraw/excalidraw";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
+import { useAtomValue, useSetAtom } from "../app-jotai";
 import { TTDIndexedDBAdapter } from "../data/TTDStorage";
+import { PROVIDERS_METADATA } from "../services/llm/config";
+import {
+  generateDiagramToCode,
+  streamTextToDiagram,
+} from "../services/llm/llmService";
+
+import {
+  llmConfigAtom,
+  llmSettingsDialogStateAtom,
+  LLMSettingsDialog,
+} from "./LLMSettings/LLMSettingsDialog";
+import { AIChatWidget } from "./AIChat/AIChatWidget";
 
 export const AIComponents = ({
   excalidrawAPI,
 }: {
   excalidrawAPI: ExcalidrawImperativeAPI;
 }) => {
+  const setLlmSettingsDialogState = useSetAtom(llmSettingsDialogStateAtom);
+  const activeConfig = useAtomValue(llmConfigAtom);
+
   return (
     <>
       <DiagramToCodePlugin
         generate={async ({ frame, children, onPartial }) => {
           const appState = excalidrawAPI.getAppState();
+          const files = excalidrawAPI.getFiles();
 
-          // SAFETY: This should never happen, but log it just in case
-          if (children.some((el) => el.isDeleted)) {
-            console.error(
-              "[NONDELETED][INVARIANT] Generated children elements should not be `isDeleted: true`",
-            );
-          }
-
-          const blob = await exportToBlob({
-            elements: getNonDeletedElements(children),
-            appState: {
-              ...appState,
-              exportBackground: true,
-              viewBackgroundColor: appState.viewBackgroundColor,
-            },
-            exportingFrame: frame,
-            files: excalidrawAPI.getFiles(),
-            mimeType: MIME_TYPES.jpg,
+          return generateDiagramToCode({
+            frame,
+            children,
+            appState,
+            files,
+            onPartial,
           });
-
-          const dataURL = await getDataURL(blob);
-
-          const textFromFrameChildren = getTextFromElements(children);
-
-          const response = await fetch(
-            `${
-              import.meta.env.VITE_APP_AI_BACKEND
-            }/v1/ai/diagram-to-code/generate-streaming`,
-            {
-              method: "POST",
-              headers: {
-                Accept: "text/event-stream",
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                texts: textFromFrameChildren,
-                image: dataURL,
-                theme: appState.theme,
-              }),
-            },
-          );
-
-          if (!response.ok) {
-            const text = await response.text();
-            const errorJSON = safelyParseJSON(text);
-
-            if (!errorJSON) {
-              throw new Error(text);
-            }
-
-            if (errorJSON.statusCode === 429) {
-              return {
-                html: `<html>
-                <body style="margin: 0; text-align: center">
-                <div style="display: flex; align-items: center; justify-content: center; flex-direction: column; height: 100vh; padding: 0 60px">
-                  <div style="color:red">Too many requests today,</br>please try again tomorrow!</div>
-                  </br>
-                  </br>
-                  <div>You can also try <a href="${
-                    import.meta.env.VITE_APP_PLUS_LP
-                  }/plus?utm_source=excalidraw&utm_medium=app&utm_content=d2c" target="_blank" rel="noopener">Excalidraw+</a> to get more requests.</div>
-                </div>
-                </body>
-                </html>`,
-              };
-            }
-
-            throw new Error(errorJSON.message || text);
-          }
-
-          const reader = response.body?.getReader();
-
-          if (!reader) {
-            throw new Error("Generation failed (invalid response)");
-          }
-
-          let html = "";
-          let streamError: Error | null = null;
-
-          for await (const data of parseSSEStream(reader)) {
-            if (data === "[DONE]") {
-              break;
-            }
-
-            const chunk = safelyParseJSON(data) as StreamChunk | null;
-
-            if (!chunk) {
-              continue;
-            }
-
-            switch (chunk.type) {
-              case "content": {
-                if (chunk.delta) {
-                  html += chunk.delta;
-                  onPartial?.(html);
-                }
-                break;
-              }
-              case "error": {
-                streamError = new Error(
-                  chunk.error.message || "Generation failed",
-                );
-                break;
-              }
-              case "done": {
-                break;
-              }
-            }
-          }
-
-          if (streamError) {
-            throw streamError;
-          }
-
-          if (!html.trim()) {
-            throw new Error("Generation failed (invalid response)");
-          }
-
-          return {
-            html,
-          };
         }}
       />
 
@@ -154,21 +47,72 @@ export const AIComponents = ({
         onTextSubmit={async (props) => {
           const { onChunk, onStreamCreated, signal, messages } = props;
 
-          const result = await TTDStreamFetch({
-            url: `${
-              import.meta.env.VITE_APP_AI_BACKEND
-            }/v1/ai/text-to-diagram/chat-streaming`,
+          return streamTextToDiagram({
             messages,
             onChunk,
             onStreamCreated,
-            extractRateLimits: true,
             signal,
           });
+        }}
+        renderWelcomeScreen={() => {
+          const providerMeta =
+            PROVIDERS_METADATA[activeConfig.provider] ||
+            PROVIDERS_METADATA.ollama;
 
-          return result;
+          return (
+            <div className="chat-interface__welcome-screen__welcome-message">
+              <TTDDialog.WelcomeMessage />
+              <div
+                style={{
+                  marginTop: "1.25rem",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                }}
+              >
+                <button
+                  type="button"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "0.4rem",
+                    padding: "0.4rem 0.85rem",
+                    borderRadius: "0.5rem",
+                    border: "1px solid var(--dialog-border-color, #d1d5db)",
+                    background: "var(--color-surface-lowest, #ffffff)",
+                    color: "var(--text-primary-color, #374151)",
+                    fontSize: "0.8rem",
+                    cursor: "pointer",
+                    fontWeight: 500,
+                    boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)",
+                  }}
+                  onClick={() => setLlmSettingsDialogState({ isOpen: true })}
+                >
+                  <span
+                    style={{
+                      width: 14,
+                      height: 14,
+                      display: "inline-flex",
+                      alignItems: "center",
+                    }}
+                  >
+                    {settingsIcon}
+                  </span>
+                  <span>
+                    IA: <strong>{providerMeta.name.split(" ")[0]}</strong> (
+                    {activeConfig.model})
+                  </span>
+                </button>
+              </div>
+            </div>
+          );
         }}
         persistenceAdapter={TTDIndexedDBAdapter}
       />
+
+      <LLMSettingsDialog />
+      <AIChatWidget excalidrawAPI={excalidrawAPI} />
     </>
   );
 };

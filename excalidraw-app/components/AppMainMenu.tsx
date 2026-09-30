@@ -2,6 +2,7 @@ import {
   loginIcon,
   ExcalLogo,
   eyeIcon,
+  brainIcon,
 } from "@excalidraw/excalidraw/components/icons";
 import { useI18n } from "@excalidraw/excalidraw/i18n";
 import { MainMenu } from "@excalidraw/excalidraw/index";
@@ -11,8 +12,12 @@ import { isDevEnv } from "@excalidraw/common";
 
 import type { Theme } from "@excalidraw/element/types";
 
+import { useSetAtom } from "../app-jotai";
 import { LanguageList } from "../app-language/LanguageList";
 import { isExcalidrawPlusSignedUser } from "../app_constants";
+
+import { llmSettingsDialogStateAtom } from "./LLMSettings/LLMSettingsDialog";
+import { aiChatWidgetStateAtom } from "./AIChat/AIChatWidget";
 
 import { saveDebugState } from "./DebugCanvas";
 
@@ -24,6 +29,8 @@ export const AppMainMenu: React.FC<{
   refresh: () => void;
 }> = React.memo((props) => {
   const { t } = useI18n();
+  const setLlmSettingsDialogState = useSetAtom(llmSettingsDialogStateAtom);
+  const setAiChatWidgetState = useSetAtom(aiChatWidgetStateAtom);
   return (
     <MainMenu>
       <MainMenu.DefaultItems.LoadScene />
@@ -78,6 +85,24 @@ export const AppMainMenu: React.FC<{
         </MainMenu.Item>
       )}
       <MainMenu.Separator />
+      <MainMenu.Item
+        icon={brainIcon}
+        onSelect={() =>
+          setAiChatWidgetState((prev) => ({
+            ...prev,
+            isOpen: true,
+            isMinimized: false,
+          }))
+        }
+      >
+        Chat com Agentes de IA
+      </MainMenu.Item>
+      <MainMenu.Item
+        icon={brainIcon}
+        onSelect={() => setLlmSettingsDialogState({ isOpen: true })}
+      >
+        Configurações de IA / LLM
+      </MainMenu.Item>
       <MainMenu.DefaultItems.Preferences />
       <MainMenu.DefaultItems.ToggleTheme allowSystemTheme theme={props.theme} />
       <MainMenu.ItemCustom>
