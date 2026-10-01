@@ -451,7 +451,15 @@ export const AIChatWidget: React.FC<{
         {mermaidSnippet && (
           <div className="mermaid-insert-card">
             <div className="card-header">
-              <span>📊 Diagrama Mermaid Detectado</span>
+              <span>
+                {cleanContent.includes("Atualizado")
+                  ? "🔄 Diagrama Atualizado com Modificações"
+                  : cleanContent.includes("Expandido")
+                  ? "➕ Diagrama Expandido com Novos Blocos"
+                  : cleanContent.includes("Desfragmentação")
+                  ? "🌿 Diagrama com Cards e Folhas Desfragmentadas"
+                  : "📊 Diagrama Mermaid Pronto para Canvas"}
+              </span>
             </div>
             <button
               type="button"
@@ -469,7 +477,13 @@ export const AIChatWidget: React.FC<{
                 </>
               ) : (
                 <>
-                  <span>🎨 Inserir no Canvas Excalidraw</span>
+                  <span>
+                    {cleanContent.includes("Atualizado")
+                      ? "🔄 Atualizar no Canvas Excalidraw"
+                      : cleanContent.includes("Expandido")
+                      ? "➕ Adicionar ao Canvas Excalidraw"
+                      : "🎨 Inserir no Canvas Excalidraw"}
+                  </span>
                 </>
               )}
             </button>
