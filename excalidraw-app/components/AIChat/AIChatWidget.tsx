@@ -75,6 +75,7 @@ export const AIChatWidget: React.FC<{
   const [inlineTesting, setInlineTesting] = useState(false);
   const [inlineTestResult, setInlineTestResult] =
     useState<TestConnectionResult | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
 
   useEffect(() => {
     setInlineConfig(activeLLMConfig);
@@ -134,6 +135,7 @@ export const AIChatWidget: React.FC<{
       apiKey: provider === prev.provider ? prev.apiKey : "",
     }));
     setInlineTestResult(null);
+    setDiscoveredModels([]);
   };
 
   // Test inline connection
@@ -143,6 +145,15 @@ export const AIChatWidget: React.FC<{
     try {
       const res = await testLLMConnection(inlineConfig);
       setInlineTestResult(res);
+      if (res.availableModels && res.availableModels.length > 0) {
+        setDiscoveredModels(res.availableModels);
+        if (!res.availableModels.includes(inlineConfig.model)) {
+          setInlineConfig((prev) => ({
+            ...prev,
+            model: res.availableModels![0],
+          }));
+        }
+      }
     } catch (err: any) {
       setInlineTestResult({
         success: false,
@@ -655,8 +666,11 @@ export const AIChatWidget: React.FC<{
                     setInlineConfig({ ...inlineConfig, model: e.target.value })
                   }
                 >
-                  {(
-                    PROVIDERS_METADATA[inlineConfig.provider]?.popularModels || []
+                  {Array.from(
+                    new Set([
+                      ...(discoveredModels.length > 0 ? discoveredModels : []),
+                      ...(PROVIDERS_METADATA[inlineConfig.provider]?.popularModels || []),
+                    ]),
                   ).map((m) => (
                     <option key={m} value={m}>
                       {m}

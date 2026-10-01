@@ -181,21 +181,22 @@ async function* parseSSEStream(
   }
 }
 
+export function isGeminiProvider(config: LLMConfig): boolean {
+  return (
+    config.provider === "antigravity" ||
+    config.provider === "gemini" ||
+    (typeof config.baseUrl === "string" &&
+      config.baseUrl.includes("generativelanguage.googleapis.com"))
+  );
+}
+
 export function resolveEndpointAndHeaders(config: LLMConfig): {
   endpoint: string;
   headers: Record<string, string>;
 } {
   let baseUrl = config.baseUrl.replace(/\/+$/, "");
 
-  // Auto-normalize Google Gemini / Antigravity OpenAI-compatible endpoint
-  if (
-    (config.provider === "antigravity" || config.provider === "gemini") &&
-    baseUrl.includes("generativelanguage.googleapis.com") &&
-    !baseUrl.includes("/openai")
-  ) {
-    baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai";
-  }
-
+  // Auto-normalize OpenAI-compatible endpoint
   const endpoint = baseUrl.endsWith("/chat/completions")
     ? baseUrl
     : `${baseUrl}/chat/completions`;
@@ -269,7 +270,87 @@ export async function testLLMConnection(
       }
     }
 
-    // 2. Standard OpenAI-compatible check or other providers
+    // 2. Google Gemini / Antigravity direct native API check
+    if (isGeminiProvider(config)) {
+      const apiKey = config.apiKey.trim();
+      const listEndpoint = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(
+        apiKey,
+      )}`;
+
+      const listResponse = await fetch(listEndpoint, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+
+      if (!listResponse.ok) {
+        const errorText = await listResponse.text();
+        let errorMsg = `HTTP ${listResponse.status}: ${listResponse.statusText}`;
+        try {
+          const parsed = JSON.parse(errorText);
+          if (parsed.error?.message) {
+            errorMsg = parsed.error.message;
+          }
+        } catch {}
+
+        if (listResponse.status === 400 || listResponse.status === 403) {
+          return {
+            success: false,
+            message: `Chave de API inválida ou sem permissão para Google Gemini (${errorMsg}). Verifique sua chave no Google AI Studio.`,
+          };
+        }
+        return {
+          success: false,
+          message: `Erro na autenticação com Google Gemini: ${errorMsg}`,
+        };
+      }
+
+      const listData = await listResponse.json();
+      const rawModels: Array<{
+        name: string;
+        supportedGenerationMethods?: string[];
+      }> = listData.models || [];
+
+      // Filter models that support generateContent
+      const generateModels = rawModels
+        .filter(
+          (m) =>
+            !m.supportedGenerationMethods ||
+            m.supportedGenerationMethods.includes("generateContent"),
+        )
+        .map((m) => m.name.replace(/^models\//, ""));
+
+      let selectedModel = config.model
+        ? config.model.replace(/^models\//, "")
+        : "";
+
+      if (!selectedModel || !generateModels.includes(selectedModel)) {
+        const preferred = [
+          "gemini-2.0-flash",
+          "gemini-1.5-flash",
+          "gemini-2.5-flash",
+          "gemini-1.5-pro",
+          "gemini-2.0-flash-lite-preview-02-05",
+        ];
+        const found = preferred.find((p) => generateModels.includes(p));
+        if (found) {
+          selectedModel = found;
+        } else if (generateModels.length > 0) {
+          selectedModel = generateModels[0];
+        }
+      }
+
+      return {
+        success: true,
+        message: `Conexão estabelecida com sucesso com Antigravity / Google Gemini! ${
+          generateModels.length
+        } modelo(s) disponível(is): ${generateModels.slice(0, 4).join(", ")}${
+          generateModels.length > 4 ? "..." : ""
+        }`,
+        availableModels: generateModels,
+      };
+    }
+
+    // 3. Standard OpenAI-compatible check for other providers
     const { endpoint, headers } = resolveEndpointAndHeaders(config);
 
     const response = await fetch(endpoint, {
@@ -379,9 +460,6 @@ export async function streamTextToDiagram(props: {
     };
   }
 
-  const { endpoint, headers } = resolveEndpointAndHeaders(config);
-  headers.Accept = "text/event-stream";
-
   // Format messages with Mermaid System Prompt augmented by RAG
   const lastUserMsg =
     [...messages].reverse().find((m) => m.role === "user" || !m.role)?.content ||
@@ -395,27 +473,68 @@ export async function streamTextToDiagram(props: {
     systemPrompt: config.systemPrompt?.trim() || MERMAID_SYSTEM_PROMPT,
   });
 
-  const formattedMessages = [
-    {
-      role: "system",
-      content: augmentedSystemPrompt,
-    },
-    ...messages.map((m) => ({
-      role: m.role || "user",
-      content: m.content,
-    })),
-  ];
+  let endpoint = "";
+  let headers: Record<string, string> = { Accept: "text/event-stream" };
+  let bodyJson = "";
+
+  if (isGeminiProvider(config)) {
+    const model = config.model || "gemini-2.0-flash";
+    const apiKey = config.apiKey?.trim() || "";
+    endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      model,
+    )}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+    headers["Content-Type"] = "application/json";
+
+    const contents = messages
+      .filter((m) => m.content?.trim())
+      .map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      }));
+
+    if (contents.length === 0) {
+      contents.push({
+        role: "user",
+        parts: [{ text: lastUserMsg || "Generate diagram" }],
+      });
+    }
+
+    bodyJson = JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: augmentedSystemPrompt }],
+      },
+      contents,
+      generationConfig: {
+        temperature: config.temperature ?? 0.2,
+      },
+    });
+  } else {
+    const resolved = resolveEndpointAndHeaders(config);
+    endpoint = resolved.endpoint;
+    headers = { ...resolved.headers, Accept: "text/event-stream" };
+    const formattedMessages = [
+      {
+        role: "system",
+        content: augmentedSystemPrompt,
+      },
+      ...messages.map((m) => ({
+        role: m.role || "user",
+        content: m.content,
+      })),
+    ];
+    bodyJson = JSON.stringify({
+      model: config.model,
+      messages: formattedMessages,
+      temperature: config.temperature ?? 0.2,
+      stream: true,
+    });
+  }
 
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages: formattedMessages,
-        temperature: config.temperature ?? 0.2,
-        stream: true,
-      }),
+      body: bodyJson,
       signal,
     });
 
@@ -482,7 +601,12 @@ export async function streamTextToDiagram(props: {
             break;
           }
 
-          const deltaContent = chunk.choices?.[0]?.delta?.content;
+          const deltaContent =
+            chunk.choices?.[0]?.delta?.content ??
+            chunk.candidates?.[0]?.content?.parts
+              ?.map((p: any) => p.text || "")
+              .join("") ??
+            "";
           if (deltaContent) {
             fullResponse += deltaContent;
             onChunk?.(deltaContent);
@@ -585,9 +709,6 @@ export async function streamAIChatMessage(props: {
     };
   }
 
-  const { endpoint, headers } = resolveEndpointAndHeaders(config);
-  headers.Accept = "text/event-stream";
-
   const lastUserMsg =
     [...messages].reverse().find((m) => m.role === "user" || !m.role)?.content ||
     "";
@@ -602,24 +723,65 @@ export async function streamAIChatMessage(props: {
     canvasContext,
   });
 
-  const formattedMessages: Array<{ role: string; content: string }> = [
-    { role: "system", content: augmentedSystemPrompt },
-    ...messages.map((m) => ({
-      role: m.role || "user",
-      content: m.content,
-    })),
-  ];
+  let endpoint = "";
+  let headers: Record<string, string> = { Accept: "text/event-stream" };
+  let bodyJson = "";
+
+  if (isGeminiProvider(config)) {
+    const model = config.model || "gemini-2.0-flash";
+    const apiKey = config.apiKey?.trim() || "";
+    endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      model,
+    )}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+    headers["Content-Type"] = "application/json";
+
+    const contents = messages
+      .filter((m) => m.role !== "system" && m.content?.trim())
+      .map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      }));
+
+    if (contents.length === 0) {
+      contents.push({
+        role: "user",
+        parts: [{ text: lastUserMsg || "Hello" }],
+      });
+    }
+
+    bodyJson = JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: augmentedSystemPrompt }],
+      },
+      contents,
+      generationConfig: {
+        temperature: config.temperature ?? 0.3,
+      },
+    });
+  } else {
+    const resolved = resolveEndpointAndHeaders(config);
+    endpoint = resolved.endpoint;
+    headers = { ...resolved.headers, Accept: "text/event-stream" };
+    const formattedMessages: Array<{ role: string; content: string }> = [
+      { role: "system", content: augmentedSystemPrompt },
+      ...messages.map((m) => ({
+        role: m.role || "user",
+        content: m.content,
+      })),
+    ];
+    bodyJson = JSON.stringify({
+      model: config.model,
+      messages: formattedMessages,
+      temperature: config.temperature ?? 0.3,
+      stream: true,
+    });
+  }
 
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages: formattedMessages,
-        temperature: config.temperature ?? 0.3,
-        stream: true,
-      }),
+      body: bodyJson,
       signal,
     });
 
@@ -677,7 +839,12 @@ export async function streamAIChatMessage(props: {
               error: new Error(chunk.error.message || "Erro no streaming"),
             };
           }
-          const delta = chunk.choices?.[0]?.delta?.content;
+          const delta =
+            chunk.choices?.[0]?.delta?.content ??
+            chunk.candidates?.[0]?.content?.parts
+              ?.map((p: any) => p.text || "")
+              .join("") ??
+            "";
           if (delta) {
             fullResponse += delta;
             onChunk?.(delta);
@@ -834,34 +1001,66 @@ export async function generateDiagramToCode(props: {
     );
   }
 
-  const baseUrl = config.baseUrl.replace(/\/+$/, "");
-  const endpoint = baseUrl.endsWith("/chat/completions")
-    ? baseUrl
-    : `${baseUrl}/chat/completions`;
+  let endpoint = "";
+  let headers: Record<string, string> = { Accept: "text/event-stream" };
+  let bodyJson = "";
 
-  const headers: Record<string, string> = {
-    Accept: "text/event-stream",
-    "Content-Type": "application/json",
-    ...(config.customHeaders || {}),
-  };
+  if (isGeminiProvider(config)) {
+    const base64Data = dataURL.replace(/^data:image\/[a-z]+;base64,/, "");
+    const mimeType =
+      dataURL.match(/^data:(image\/[a-z]+);base64,/)?.[1] || "image/jpeg";
+    const modelToUse = config.visionModel || config.model || "gemini-2.0-flash";
+    const apiKey = config.apiKey?.trim() || "";
+    endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      modelToUse,
+    )}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+    headers["Content-Type"] = "application/json";
 
-  if (config.apiKey) {
-    headers.Authorization = `Bearer ${config.apiKey}`;
-    headers["x-goog-api-key"] = config.apiKey;
-  }
+    const promptText = `Convert this hand-drawn Excalidraw wireframe/diagram into clean, modern, interactive, and responsive HTML/Tailwind CSS code.
+Extracted text labels found in the drawing:
+${
+  textFromFrameChildren.trim()
+    ? textFromFrameChildren
+    : "(No raw text elements detected, follow the visual labels)"
+}
+Current theme: ${appState.theme}`;
 
-  // Choose appropriate vision model (or fallback to general model)
-  const modelToUse = config.visionModel || config.model;
+    bodyJson = JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: DIAGRAM_TO_CODE_SYSTEM_PROMPT }],
+      },
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: promptText },
+            {
+              inlineData: {
+                mimeType,
+                data: base64Data,
+              },
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+      },
+    });
+  } else {
+    const resolved = resolveEndpointAndHeaders(config);
+    endpoint = resolved.endpoint;
+    headers = { ...resolved.headers, Accept: "text/event-stream" };
+    const modelToUse = config.visionModel || config.model;
 
-  // Build multimodal prompt
-  const userContent: Array<{
-    type: string;
-    text?: string;
-    image_url?: { url: string };
-  }> = [
-    {
-      type: "text",
-      text: `Convert this hand-drawn Excalidraw wireframe/diagram into clean, modern, interactive, and responsive HTML/Tailwind CSS code.
+    const userContent: Array<{
+      type: string;
+      text?: string;
+      image_url?: { url: string };
+    }> = [
+      {
+        type: "text",
+        text: `Convert this hand-drawn Excalidraw wireframe/diagram into clean, modern, interactive, and responsive HTML/Tailwind CSS code.
 Extracted text labels found in the drawing:
 ${
   textFromFrameChildren.trim()
@@ -869,35 +1068,38 @@ ${
     : "(No raw text elements detected, follow the visual labels)"
 }
 Current theme: ${appState.theme}`,
-    },
-    {
-      type: "image_url",
-      image_url: {
-        url: dataURL,
       },
-    },
-  ];
+      {
+        type: "image_url",
+        image_url: {
+          url: dataURL,
+        },
+      },
+    ];
 
-  const messages = [
-    {
-      role: "system",
-      content: DIAGRAM_TO_CODE_SYSTEM_PROMPT,
-    },
-    {
-      role: "user",
-      content: userContent,
-    },
-  ];
+    const messages = [
+      {
+        role: "system",
+        content: DIAGRAM_TO_CODE_SYSTEM_PROMPT,
+      },
+      {
+        role: "user",
+        content: userContent,
+      },
+    ];
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+    bodyJson = JSON.stringify({
       model: modelToUse,
       messages,
       temperature: 0.2,
       stream: true,
-    }),
+    });
+  }
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: bodyJson,
     signal,
   });
 
@@ -940,7 +1142,12 @@ Current theme: ${appState.theme}`,
       throw new Error(chunk.error.message || "Erro na geração do código");
     }
 
-    const deltaContent = chunk.choices?.[0]?.delta?.content;
+    const deltaContent =
+      chunk.choices?.[0]?.delta?.content ??
+      chunk.candidates?.[0]?.content?.parts
+        ?.map((p: any) => p.text || "")
+        .join("") ??
+      "";
     if (deltaContent) {
       accumulatedHtml += deltaContent;
       onPartial?.(accumulatedHtml);

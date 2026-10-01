@@ -9,7 +9,7 @@ export const PROVIDERS_METADATA: Record<LLMProviderType, ProviderMetadata> = {
     description:
       "Motor inteligente Antigravity da Google DeepMind com suporte a raciocínio avançado, Gemini 2.0 Flash e agentes autônomos.",
     category: "web",
-    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    defaultBaseUrl: "https://generativelanguage.googleapis.com",
     defaultModel: "gemini-2.0-flash",
     defaultVisionModel: "gemini-2.0-flash",
     requiresApiKey: true,
@@ -87,7 +87,7 @@ export const PROVIDERS_METADATA: Record<LLMProviderType, ProviderMetadata> = {
     description:
       "Modelos Gemini 1.5 Flash e Pro da Google com rapidez, precisão multimodal e cota gratuita generosa.",
     category: "web",
-    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    defaultBaseUrl: "https://generativelanguage.googleapis.com",
     defaultModel: "gemini-1.5-flash",
     defaultVisionModel: "gemini-1.5-flash",
     requiresApiKey: true,
@@ -193,11 +193,9 @@ export const getStoredLLMConfig = (): LLMConfig => {
       PROVIDERS_METADATA[provider] || PROVIDERS_METADATA.antigravity;
 
     let baseUrl = parsed.baseUrl || meta.defaultBaseUrl;
-    // Auto-fix legacy or incomplete Google Generative Language endpoints
     if (
       (provider === "antigravity" || provider === "gemini") &&
-      baseUrl.includes("generativelanguage.googleapis.com") &&
-      !baseUrl.includes("/openai")
+      (!baseUrl || baseUrl.includes("generativelanguage.googleapis.com"))
     ) {
       baseUrl = meta.defaultBaseUrl;
     }
