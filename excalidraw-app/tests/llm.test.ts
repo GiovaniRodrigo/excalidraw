@@ -40,7 +40,7 @@ describe("LLM Integration Service & Configuration", () => {
     it("should retrieve default config when localStorage is empty", () => {
       const config = getStoredLLMConfig();
       expect(config.provider).toBe("antigravity");
-      expect(config.model).toBe("gemini-2.0-flash");
+      expect(config.model).toBe("gemini-1.5-flash");
     });
 
     it("should save and retrieve custom LLM config", () => {

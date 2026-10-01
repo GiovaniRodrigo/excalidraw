@@ -538,19 +538,11 @@ export async function streamTextToDiagram(props: {
       signal,
     });
 
-    if (!response.ok) {
-      if (response.status === 429) {
-        return {
-          error: new RequestError({
-            message:
-              "Limite de requisições excedido. Tente novamente mais tarde.",
-            status: 429,
-          }),
-        };
-      }
+    let activeResponse = response;
 
-      const text = await response.text();
-      let errorMsg = `Erro ${response.status}: ${response.statusText}`;
+    if (!activeResponse.ok) {
+      const text = await activeResponse.text();
+      let errorMsg = `Erro ${activeResponse.status}: ${activeResponse.statusText}`;
       try {
         const parsed = JSON.parse(text);
         if (parsed.error?.message) {
@@ -562,13 +554,47 @@ export async function streamTextToDiagram(props: {
         }
       }
 
-      throw new RequestError({
-        message: errorMsg,
-        status: response.status,
-      });
+      // Automatic fallback to gemini-1.5-flash on high demand
+      if (
+        isGeminiProvider(config) &&
+        (activeResponse.status === 503 ||
+          activeResponse.status === 429 ||
+          errorMsg.toLowerCase().includes("high demand")) &&
+        config.model !== "gemini-1.5-flash"
+      ) {
+        const fallbackEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key=${encodeURIComponent(
+          config.apiKey?.trim() || "",
+        )}`;
+        const retryRes = await fetch(fallbackEndpoint, {
+          method: "POST",
+          headers,
+          body: bodyJson,
+          signal,
+        });
+        if (retryRes.ok) {
+          activeResponse = retryRes;
+        }
+      }
+
+      if (!activeResponse.ok) {
+        if (activeResponse.status === 429 || errorMsg.includes("high demand")) {
+          return {
+            error: new RequestError({
+              message:
+                "O modelo está com alta demanda no momento nos servidores do Google. Tente novamente em instantes ou selecione gemini-1.5-flash.",
+              status: 429,
+            }),
+          };
+        }
+
+        throw new RequestError({
+          message: errorMsg,
+          status: activeResponse.status,
+        });
+      }
     }
 
-    const reader = response.body?.getReader();
+    const reader = activeResponse.body?.getReader();
     if (!reader) {
       throw new RequestError({
         message: "Não foi possível obter o stream de resposta do servidor",
@@ -785,9 +811,11 @@ export async function streamAIChatMessage(props: {
       signal,
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      let errorMsg = `Erro ${response.status}: ${response.statusText}`;
+    let activeResponse = response;
+
+    if (!activeResponse.ok) {
+      const text = await activeResponse.text();
+      let errorMsg = `Erro ${activeResponse.status}: ${activeResponse.statusText}`;
       try {
         const parsed = JSON.parse(text);
         if (parsed.error?.message) {
@@ -799,19 +827,50 @@ export async function streamAIChatMessage(props: {
         }
       }
 
-      if (response.status === 400) {
-        errorMsg = `Erro 400: Chave de API ausente ou inválida. (${errorMsg})`;
-      } else if (response.status === 401 || response.status === 403) {
-        errorMsg = `Chave de API inválida ou sem permissão para o modelo "${config.model}". (${errorMsg})`;
+      // Automatic fallback to gemini-1.5-flash on high demand
+      if (
+        isGeminiProvider(config) &&
+        (activeResponse.status === 503 ||
+          activeResponse.status === 429 ||
+          errorMsg.toLowerCase().includes("high demand")) &&
+        config.model !== "gemini-1.5-flash"
+      ) {
+        const fallbackEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key=${encodeURIComponent(
+          config.apiKey?.trim() || "",
+        )}`;
+        const retryRes = await fetch(fallbackEndpoint, {
+          method: "POST",
+          headers,
+          body: bodyJson,
+          signal,
+        });
+        if (retryRes.ok) {
+          activeResponse = retryRes;
+        }
       }
 
-      return {
-        content: "",
-        error: new Error(errorMsg),
-      };
+      if (!activeResponse.ok) {
+        if (activeResponse.status === 400) {
+          errorMsg = `Erro 400: Chave de API ausente ou inválida. (${errorMsg})`;
+        } else if (activeResponse.status === 401 || activeResponse.status === 403) {
+          errorMsg = `Chave de API inválida ou sem permissão para o modelo "${config.model}". (${errorMsg})`;
+        } else if (
+          activeResponse.status === 429 ||
+          activeResponse.status === 503 ||
+          errorMsg.toLowerCase().includes("high demand")
+        ) {
+          errorMsg =
+            "O modelo está com alta demanda momentânea no Google. Tente novamente ou selecione gemini-1.5-flash nas opções.";
+        }
+
+        return {
+          content: "",
+          error: new Error(errorMsg),
+        };
+      }
     }
 
-    const reader = response.body?.getReader();
+    const reader = activeResponse.body?.getReader();
     if (!reader) {
       return {
         content: "",
