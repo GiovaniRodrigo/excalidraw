@@ -20,6 +20,10 @@ import type {
 } from "@excalidraw/element/types";
 
 import { getStoredLLMConfig, PROVIDERS_METADATA } from "./config";
+import {
+  buildRAGAugmentedPrompt,
+  MERMAID_DIAGRAM_STANDARD,
+} from "./diagramRAG";
 
 import type { LLMConfig, TestConnectionResult } from "./types";
 
@@ -367,11 +371,23 @@ export async function streamTextToDiagram(props: {
     headers["x-goog-api-key"] = config.apiKey;
   }
 
-  // Format messages with Mermaid System Prompt
+  // Format messages with Mermaid System Prompt augmented by RAG
+  const lastUserMsg =
+    [...messages].reverse().find((m) => m.role === "user" || !m.role)?.content ||
+    "";
+  const { augmentedSystemPrompt } = buildRAGAugmentedPrompt({
+    prompt: lastUserMsg,
+    messages: messages.map((m) => ({
+      role: m.role || "user",
+      content: m.content,
+    })),
+    systemPrompt: config.systemPrompt?.trim() || MERMAID_SYSTEM_PROMPT,
+  });
+
   const formattedMessages = [
     {
       role: "system",
-      content: config.systemPrompt?.trim() || MERMAID_SYSTEM_PROMPT,
+      content: augmentedSystemPrompt,
     },
     ...messages.map((m) => ({
       role: m.role || "user",
@@ -574,23 +590,27 @@ export async function streamAIChatMessage(props: {
     headers["x-goog-api-key"] = config.apiKey;
   }
 
-  const formattedMessages: Array<{ role: string; content: string }> = [];
-  let baseSystem = systemPrompt?.trim() || "";
+  const lastUserMsg =
+    [...messages].reverse().find((m) => m.role === "user" || !m.role)?.content ||
+    "";
 
-  if (canvasContext && canvasContext.trim()) {
-    baseSystem = `${baseSystem}\n\n[Contexto Atual do Canvas Excalidraw]:\n${canvasContext}`.trim();
-  }
+  const { augmentedSystemPrompt } = buildRAGAugmentedPrompt({
+    prompt: lastUserMsg,
+    messages: messages.map((m) => ({
+      role: m.role || "user",
+      content: m.content,
+    })),
+    systemPrompt: systemPrompt || config.systemPrompt,
+    canvasContext,
+  });
 
-  if (baseSystem) {
-    formattedMessages.push({ role: "system", content: baseSystem });
-  }
-
-  for (const msg of messages) {
-    formattedMessages.push({
-      role: msg.role || "user",
-      content: msg.content,
-    });
-  }
+  const formattedMessages: Array<{ role: string; content: string }> = [
+    { role: "system", content: augmentedSystemPrompt },
+    ...messages.map((m) => ({
+      role: m.role || "user",
+      content: m.content,
+    })),
+  ];
 
   try {
     const response = await fetch(endpoint, {
