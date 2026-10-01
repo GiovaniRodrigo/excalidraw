@@ -192,10 +192,20 @@ export const getStoredLLMConfig = (): LLMConfig => {
     const meta =
       PROVIDERS_METADATA[provider] || PROVIDERS_METADATA.antigravity;
 
+    let baseUrl = parsed.baseUrl || meta.defaultBaseUrl;
+    // Auto-fix legacy or incomplete Google Generative Language endpoints
+    if (
+      (provider === "antigravity" || provider === "gemini") &&
+      baseUrl.includes("generativelanguage.googleapis.com") &&
+      !baseUrl.includes("/openai")
+    ) {
+      baseUrl = meta.defaultBaseUrl;
+    }
+
     return {
       provider,
       apiKey: parsed.apiKey ?? "",
-      baseUrl: parsed.baseUrl || meta.defaultBaseUrl,
+      baseUrl,
       model: parsed.model || meta.defaultModel,
       visionModel: parsed.visionModel || meta.defaultVisionModel,
       temperature:

@@ -181,6 +181,37 @@ async function* parseSSEStream(
   }
 }
 
+export function resolveEndpointAndHeaders(config: LLMConfig): {
+  endpoint: string;
+  headers: Record<string, string>;
+} {
+  let baseUrl = config.baseUrl.replace(/\/+$/, "");
+
+  // Auto-normalize Google Gemini / Antigravity OpenAI-compatible endpoint
+  if (
+    (config.provider === "antigravity" || config.provider === "gemini") &&
+    baseUrl.includes("generativelanguage.googleapis.com") &&
+    !baseUrl.includes("/openai")
+  ) {
+    baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai";
+  }
+
+  const endpoint = baseUrl.endsWith("/chat/completions")
+    ? baseUrl
+    : `${baseUrl}/chat/completions`;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(config.customHeaders || {}),
+  };
+
+  if (config.apiKey?.trim()) {
+    headers.Authorization = `Bearer ${config.apiKey.trim()}`;
+  }
+
+  return { endpoint, headers };
+}
+
 // ============================================================================
 // Connection Tester
 // ============================================================================
@@ -239,21 +270,7 @@ export async function testLLMConnection(
     }
 
     // 2. Standard OpenAI-compatible check or other providers
-    const baseUrl = config.baseUrl.replace(/\/+$/, "");
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      ...(config.customHeaders || {}),
-    };
-
-    if (config.apiKey) {
-      headers.Authorization = `Bearer ${config.apiKey}`;
-      headers["x-goog-api-key"] = config.apiKey;
-    }
-
-    // Attempt a lightweight test completion
-    const endpoint = baseUrl.endsWith("/chat/completions")
-      ? baseUrl
-      : `${baseUrl}/chat/completions`;
+    const { endpoint, headers } = resolveEndpointAndHeaders(config);
 
     const response = await fetch(endpoint, {
       method: "POST",
@@ -290,6 +307,13 @@ export async function testLLMConnection(
         return {
           success: false,
           message: `Chave de API inválida ou sem permissão para o modelo "${config.model}". (${errorMsg})`,
+        };
+      }
+
+      if (response.status === 404) {
+        return {
+          success: false,
+          message: `Erro 404: Endpoint ou modelo "${config.model}" não encontrado no servidor (${endpoint}). Verifique a URL Base nas configurações.`,
         };
       }
 
@@ -355,21 +379,8 @@ export async function streamTextToDiagram(props: {
     };
   }
 
-  const baseUrl = config.baseUrl.replace(/\/+$/, "");
-  const endpoint = baseUrl.endsWith("/chat/completions")
-    ? baseUrl
-    : `${baseUrl}/chat/completions`;
-
-  const headers: Record<string, string> = {
-    Accept: "text/event-stream",
-    "Content-Type": "application/json",
-    ...(config.customHeaders || {}),
-  };
-
-  if (config.apiKey) {
-    headers.Authorization = `Bearer ${config.apiKey}`;
-    headers["x-goog-api-key"] = config.apiKey;
-  }
+  const { endpoint, headers } = resolveEndpointAndHeaders(config);
+  headers.Accept = "text/event-stream";
 
   // Format messages with Mermaid System Prompt augmented by RAG
   const lastUserMsg =
@@ -574,21 +585,8 @@ export async function streamAIChatMessage(props: {
     };
   }
 
-  const baseUrl = config.baseUrl.replace(/\/+$/, "");
-  const endpoint = baseUrl.endsWith("/chat/completions")
-    ? baseUrl
-    : `${baseUrl}/chat/completions`;
-
-  const headers: Record<string, string> = {
-    Accept: "text/event-stream",
-    "Content-Type": "application/json",
-    ...(config.customHeaders || {}),
-  };
-
-  if (config.apiKey) {
-    headers.Authorization = `Bearer ${config.apiKey}`;
-    headers["x-goog-api-key"] = config.apiKey;
-  }
+  const { endpoint, headers } = resolveEndpointAndHeaders(config);
+  headers.Accept = "text/event-stream";
 
   const lastUserMsg =
     [...messages].reverse().find((m) => m.role === "user" || !m.role)?.content ||
