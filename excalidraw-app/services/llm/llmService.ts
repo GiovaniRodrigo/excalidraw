@@ -20,13 +20,8 @@ import type {
 } from "@excalidraw/element/types";
 
 import { getStoredLLMConfig, PROVIDERS_METADATA } from "./config";
-import {
-  retrieveRAGContext,
-  generateAntigravityRAGResponse,
-} from "./ragEngine";
 
 import type { LLMConfig, TestConnectionResult } from "./types";
-import type { RAGContext } from "./ragEngine";
 
 // ============================================================================
 // Prompts
@@ -145,22 +140,6 @@ export function extractHtmlCode(rawText: string): string {
 }
 
 // ============================================================================
-// Built-in Antigravity Local Generator (Standalone & Offline Fallback)
-// ============================================================================
-
-export function generateAntigravityLocalResponse(
-  prompt: string,
-  agentId?: string,
-  options?: {
-    canvasContext?: string;
-    conversationHistory?: Array<{ role: string; content: string }>;
-  },
-): string {
-  const ragContext = retrieveRAGContext(prompt, options);
-  return generateAntigravityRAGResponse(prompt, ragContext, agentId);
-}
-
-// ============================================================================
 // SSE Streaming Parser
 // ============================================================================
 
@@ -223,7 +202,7 @@ export async function testLLMConnection(
   }
 
   try {
-    // 1. Ollama specific check (can also query /api/tags to list installed models)
+    // 1. Ollama specific check
     if (config.provider === "ollama") {
       const baseUrl = config.baseUrl.replace(/\/+$/, "");
       try {
@@ -357,17 +336,18 @@ export async function streamTextToDiagram(props: {
     );
   }
 
-  // Antigravity standalone offline/zero-config fallback
-  if (config.provider === "antigravity" && !config.apiKey?.trim()) {
-    onStreamCreated?.();
-    const lastUserMsg =
-      [...messages].reverse().find((m) => m.role === "user")?.content || "";
-    const generated = generateAntigravityLocalResponse(lastUserMsg);
-    const diagram = extractMermaidCode(generated);
-    onChunk?.(diagram);
+  // Check required API key
+  if (
+    PROVIDERS_METADATA[config.provider]?.requiresApiKey &&
+    !config.apiKey?.trim()
+  ) {
     return {
-      generatedResponse: diagram,
-      error: null,
+      error: new RequestError({
+        message: `Chave de API necessária para ${
+          PROVIDERS_METADATA[config.provider]?.name || config.provider
+        }. Configure sua chave nas opções ou selecione Ollama para uso local.`,
+        status: 400,
+      }),
     };
   }
 
@@ -541,7 +521,7 @@ export async function streamTextToDiagram(props: {
 }
 
 // ============================================================================
-// Conversational AI Agent Chat Streaming
+// Conversational AI Agent Chat Streaming (Direct LLM Connection)
 // ============================================================================
 
 export async function streamAIChatMessage(props: {
@@ -563,33 +543,19 @@ export async function streamAIChatMessage(props: {
   } = props;
   const config = props.config || getStoredLLMConfig();
 
-  const lastUserMsg =
-    [...messages].reverse().find((m) => m.role === "user")?.content || "";
-
-  const ragContext = retrieveRAGContext(lastUserMsg, {
-    canvasContext,
-    conversationHistory: messages,
-  });
-
-  // If Antigravity provider is active without an API key, use the built-in intelligent RAG generator seamlessly
-  if (config.provider === "antigravity" && !config.apiKey?.trim()) {
-    onStreamCreated?.();
-    const generated = generateAntigravityRAGResponse(lastUserMsg, ragContext);
-
-    const chunkSize = 28;
-    for (let i = 0; i < generated.length; i += chunkSize) {
-      if (signal?.aborted) {
-        return {
-          content: generated.slice(0, i),
-          error: new Error("Geração cancelada pelo usuário"),
-        };
-      }
-      const chunk = generated.slice(i, i + chunkSize);
-      onChunk?.(chunk);
-      await new Promise((resolve) => setTimeout(resolve, 16));
-    }
-
-    return { content: generated, error: null };
+  // Validate required API key
+  if (
+    PROVIDERS_METADATA[config.provider]?.requiresApiKey &&
+    !config.apiKey?.trim()
+  ) {
+    return {
+      content: "",
+      error: new Error(
+        `Chave de API necessária para ${
+          PROVIDERS_METADATA[config.provider]?.name || config.provider
+        }. Clique em "⚙️ Configurar Provedor" para inserir sua chave ou selecione Ollama para execução local sem chave.`,
+      ),
+    };
   }
 
   const baseUrl = config.baseUrl.replace(/\/+$/, "");
@@ -609,11 +575,14 @@ export async function streamAIChatMessage(props: {
   }
 
   const formattedMessages: Array<{ role: string; content: string }> = [];
-  const baseSystem = systemPrompt?.trim() || "";
-  const augmentedSystem = `${baseSystem}\n\n${ragContext.augmentedPrompt}`.trim();
+  let baseSystem = systemPrompt?.trim() || "";
 
-  if (augmentedSystem) {
-    formattedMessages.push({ role: "system", content: augmentedSystem });
+  if (canvasContext && canvasContext.trim()) {
+    baseSystem = `${baseSystem}\n\n[Contexto Atual do Canvas Excalidraw]:\n${canvasContext}`.trim();
+  }
+
+  if (baseSystem) {
+    formattedMessages.push({ role: "system", content: baseSystem });
   }
 
   for (const msg of messages) {
@@ -651,7 +620,7 @@ export async function streamAIChatMessage(props: {
       }
 
       if (response.status === 400) {
-        errorMsg = `Erro 400: Chave de API ausente ou inválida. Configure sua chave no painel de configurações. (${errorMsg})`;
+        errorMsg = `Erro 400: Chave de API ausente ou inválida. (${errorMsg})`;
       } else if (response.status === 401 || response.status === 403) {
         errorMsg = `Chave de API inválida ou sem permissão para o modelo "${config.model}". (${errorMsg})`;
       }
@@ -731,7 +700,6 @@ export async function streamAIChatMessage(props: {
     };
   }
 }
-
 
 // Fallback to default Excalidraw backend if selected
 async function streamDefaultBackend(
@@ -861,6 +829,7 @@ export async function generateDiagramToCode(props: {
 
   if (config.apiKey) {
     headers.Authorization = `Bearer ${config.apiKey}`;
+    headers["x-goog-api-key"] = config.apiKey;
   }
 
   // Choose appropriate vision model (or fallback to general model)
