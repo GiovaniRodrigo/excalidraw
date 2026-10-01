@@ -20,8 +20,13 @@ import type {
 } from "@excalidraw/element/types";
 
 import { getStoredLLMConfig, PROVIDERS_METADATA } from "./config";
+import {
+  retrieveRAGContext,
+  generateAntigravityRAGResponse,
+} from "./ragEngine";
 
 import type { LLMConfig, TestConnectionResult } from "./types";
+import type { RAGContext } from "./ragEngine";
 
 // ============================================================================
 // Prompts
@@ -146,220 +151,13 @@ export function extractHtmlCode(rawText: string): string {
 export function generateAntigravityLocalResponse(
   prompt: string,
   agentId?: string,
+  options?: {
+    canvasContext?: string;
+    conversationHistory?: Array<{ role: string; content: string }>;
+  },
 ): string {
-  const lower = prompt.toLowerCase();
-
-  if (
-    lower.includes("microsservi") ||
-    lower.includes("microservice") ||
-    lower.includes("kafka") ||
-    lower.includes("redis") ||
-    lower.includes("escala")
-  ) {
-    return `### Arquitetura de Microsserviços de Alta Escala (Event-Driven)
-
-Modelagem técnica projetada pelo **Antigravity AI**:
-
-1. **API Gateway & Load Balancer**: Ponto de entrada único com autenticação JWT, rate limiting e terminação SSL.
-2. **Microsserviços Desacoplados**: Serviços de Autenticação, Pedidos e Usuários operando de forma independente.
-3. **Barramento Kafka**: Stream de eventos assíncrono para garantir resiliência e processamento em lote.
-4. **Cache & Persistência Isolada**: Redis para cache in-memory e bancos de dados isolados por serviço.
-
-\`\`\`mermaid
-flowchart TD
-    Client["🌐 Clientes (Web / Mobile)"] -->|HTTPS| Gateway["🛡️ API Gateway & Load Balancer"]
-    
-    subgraph CoreServices ["⚙️ Camada de Microsserviços"]
-        Gateway --> AuthSvc["🔐 Auth Service"]
-        Gateway --> OrderSvc["📦 Order Service"]
-        Gateway --> UserSvc["👤 User Service"]
-    end
-    
-    subgraph DataCache ["💾 Cache & Mensageria"]
-        OrderSvc -->|Eventos| Kafka["⚡ Apache Kafka Cluster"]
-        OrderSvc <-->|Cache| Redis["⚡ Redis In-Memory Cache"]
-        UserSvc <-->|Cache| Redis
-    end
-    
-    subgraph Workers ["🔄 Processamento Assíncrono"]
-        Kafka --> PaymentWorker["💳 Payment Consumer"]
-        Kafka --> NotifWorker["🔔 Notification Consumer"]
-    end
-    
-    subgraph Storage ["🗄️ Persistência Distribuída"]
-        AuthSvc --> AuthDB[("🗄️ Auth DB - PostgreSQL")]
-        OrderSvc --> OrderDB[("🗄️ Orders DB - PostgreSQL")]
-        PaymentWorker --> PayDB[("🗄️ Payments DB")]
-        NotifWorker --> NotifDB[("🗄️ Notifications Log")]
-    end
-\`\`\`
-
-> 💡 *Clique em **"🎨 Inserir no Canvas Excalidraw"** abaixo para renderizar e posicionar este diagrama na sua tela!*`;
-  }
-
-  if (
-    lower.includes("auth") ||
-    lower.includes("oauth") ||
-    lower.includes("jwt") ||
-    lower.includes("login")
-  ) {
-    return `### Fluxo de Autenticação Segura (OAuth2 + JWT Refresh Token)
-
-Modelagem de autenticação projetada pelo **Antigravity AI**:
-
-\`\`\`mermaid
-sequenceDiagram
-    autonumber
-    actor User as 👤 Usuário
-    participant App as 💻 Frontend (Excalidraw)
-    participant Gateway as 🛡️ API Gateway
-    participant Auth as 🔐 Auth Provider
-    participant Resource as 📦 API de Recursos
-
-    User->>App: Submete credenciais (Login / Senha)
-    App->>Gateway: POST /auth/login
-    Gateway->>Auth: Valida credenciais e MFA
-    Auth-->>Gateway: Retorna Access Token (JWT) + Refresh Token
-    Gateway-->>App: Set-Cookie (HttpOnly Refresh) + Bearer Token
-    App->>Resource: Requisição autenticada (Header: Bearer JWT)
-    Resource-->>App: 200 OK (Dados protegidos)
-\`\`\`
-
-> 💡 *Clique no botão abaixo para adicionar este diagrama de sequência diretamente ao seu canvas!*`;
-  }
-
-  if (
-    lower.includes("checkout") ||
-    lower.includes("pagamento") ||
-    lower.includes("payment")
-  ) {
-    return `### Fluxo de Checkout e Gateway de Pagamento
-
-Fluxograma de processamento e liquidação desenhado pelo **Antigravity AI**:
-
-\`\`\`mermaid
-flowchart TD
-    Start([🛒 Início: Carrinho Finalizado]) --> ValidCart{"Validar Estoque & Cupom?"}
-    ValidCart -- Não --> ErrorStock["❌ Erro: Item Esgotado"] --> EndFail([Fim])
-    ValidCart -- Sim --> CalcFreight["🚚 Calcular Frete e Prazos"]
-    
-    CalcFreight --> SelectPay["💳 Escolher Meio de Pagamento"]
-    SelectPay --> ProcessPay["⚡ Enviar para Gateway (Stripe/Pix)"]
-    
-    ProcessPay --> StatusPay{"Status do Pagamento?"}
-    StatusPay -- Aprovado --> CreateOrder["✅ Criar Pedido & Reservar Itens"]
-    StatusPay -- Recusado --> Retry["⚠️ Tentar outro meio"] --> SelectPay
-    StatusPay -- Pendente --> WaitWebhook["⏳ Aguardar Notificação Webhook"]
-    
-    WaitWebhook --> WebhookCheck{"Webhook Confirmado?"}
-    WebhookCheck -- Sim --> CreateOrder
-    WebhookCheck -- Não --> CancelOrder["❌ Cancelar Pedido"] --> EndFail
-    
-    CreateOrder --> NotifyUser["🔔 Enviar Confirmação ao Cliente"] --> EndSuccess([🎉 Sucesso])
-\`\`\`
-
-> 💡 *Clique em **"🎨 Inserir no Canvas Excalidraw"** para desenhar este fluxo no canvas!*`;
-  }
-
-  if (
-    lower.includes("tdd") ||
-    lower.includes("teste") ||
-    lower.includes("test")
-  ) {
-    return `### Ciclo TDD (Test-Driven Development) & Pirâmide de Qualidade
-
-Arquitetura de desenvolvimento orientada a testes pelo **Antigravity AI**:
-
-\`\`\`mermaid
-flowchart TD
-    subgraph TDD_Cycle ["🔁 Loop TDD (Red-Green-Refactor)"]
-        Red["🔴 1. RED: Escreva um teste que falha"] --> Green["🟢 2. GREEN: Escreva o código mínimo para passar"]
-        Green --> Refactor["🔵 3. REFACTOR: Melhore o código e design"]
-        Refactor --> Red
-    end
-    
-    subgraph Pyramid ["🔺 Pirâmide de Testes"]
-        E2E["🏆 E2E Tests (Playwright / Cypress)"]
-        Integration["📦 Integration Tests (Seams & APIs)"]
-        Unit["⚡ Unit Tests (Rápidos & Isolados)"]
-        
-        E2E --> Integration
-        Integration --> Unit
-    end
-\`\`\`
-
-> 💡 *Clique no botão abaixo para transferir o diagrama ao canvas!*`;
-  }
-
-  if (
-    lower.includes("banco") ||
-    lower.includes("erd") ||
-    lower.includes("database") ||
-    lower.includes("tabela") ||
-    lower.includes("entidade")
-  ) {
-    return `### Diagrama Entidade-Relacionamento (ERD)
-
-Modelagem de dados estruturada pelo **Antigravity AI**:
-
-\`\`\`mermaid
-erDiagram
-    USUARIO ||--o{ PEDIDO : "realiza"
-    USUARIO {
-        uuid id PK
-        string nome
-        string email UK
-        string senha_hash
-        timestamp criado_em
-    }
-    
-    PEDIDO ||--|{ ITEM_PEDIDO : "contém"
-    PEDIDO {
-        uuid id PK
-        uuid usuario_id FK
-        string status
-        decimal total
-        timestamp data_pedido
-    }
-    
-    PRODUTO ||--o{ ITEM_PEDIDO : "pertence_a"
-    PRODUTO {
-        uuid id PK
-        string nome
-        decimal preco
-        int estoque
-    }
-    
-    ITEM_PEDIDO {
-        uuid id PK
-        uuid pedido_id FK
-        uuid produto_id FK
-        int quantidade
-        decimal preco_unitario
-    }
-\`\`\`
-
-> 💡 *Clique em **"🎨 Inserir no Canvas Excalidraw"** para adicionar o diagrama ERD na sua tela!*`;
-  }
-
-  const title = prompt.length > 40 ? `${prompt.slice(0, 37)}...` : prompt;
-  return `### Análise Técnica & Diagrama de Sistema
-
-Resposta estruturada pelo **Antigravity AI** para: *"${title}"*
-
-\`\`\`mermaid
-flowchart TD
-    Start["🚀 Início: ${title.replace(/"/g, "'")}"] --> Step1["⚙️ Etapa 1: Análise e Processamento"]
-    Step1 --> Decision{"Condição Satisfeita?"}
-    
-    Decision -- Sim --> Success["✅ Sucesso: Resultado Gerado"]
-    Decision -- Não --> Handler["⚠️ Tratamento Alternativo"]
-    
-    Success --> Storage[("💾 Persistência de Dados")]
-    Handler --> Retry["🔄 Reavaliação do Fluxo"]
-\`\`\`
-
-> 💡 *Clique em **"🎨 Inserir no Canvas Excalidraw"** abaixo para adicionar este diagrama à tela!*`;
+  const ragContext = retrieveRAGContext(prompt, options);
+  return generateAntigravityRAGResponse(prompt, ragContext, agentId);
 }
 
 // ============================================================================
@@ -750,19 +548,33 @@ export async function streamAIChatMessage(props: {
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
   systemPrompt?: string;
   config?: LLMConfig;
+  canvasContext?: string;
   onChunk?: (chunk: string) => void;
   onStreamCreated?: () => void;
   signal?: AbortSignal;
 }): Promise<{ content: string; error: Error | null }> {
-  const { messages, systemPrompt, onChunk, onStreamCreated, signal } = props;
+  const {
+    messages,
+    systemPrompt,
+    canvasContext,
+    onChunk,
+    onStreamCreated,
+    signal,
+  } = props;
   const config = props.config || getStoredLLMConfig();
 
-  // If Antigravity provider is active without an API key, use the built-in intelligent generator seamlessly
+  const lastUserMsg =
+    [...messages].reverse().find((m) => m.role === "user")?.content || "";
+
+  const ragContext = retrieveRAGContext(lastUserMsg, {
+    canvasContext,
+    conversationHistory: messages,
+  });
+
+  // If Antigravity provider is active without an API key, use the built-in intelligent RAG generator seamlessly
   if (config.provider === "antigravity" && !config.apiKey?.trim()) {
     onStreamCreated?.();
-    const lastUserMsg =
-      [...messages].reverse().find((m) => m.role === "user")?.content || "";
-    const generated = generateAntigravityLocalResponse(lastUserMsg);
+    const generated = generateAntigravityRAGResponse(lastUserMsg, ragContext);
 
     const chunkSize = 28;
     for (let i = 0; i < generated.length; i += chunkSize) {
@@ -797,8 +609,11 @@ export async function streamAIChatMessage(props: {
   }
 
   const formattedMessages: Array<{ role: string; content: string }> = [];
-  if (systemPrompt?.trim()) {
-    formattedMessages.push({ role: "system", content: systemPrompt.trim() });
+  const baseSystem = systemPrompt?.trim() || "";
+  const augmentedSystem = `${baseSystem}\n\n${ragContext.augmentedPrompt}`.trim();
+
+  if (augmentedSystem) {
+    formattedMessages.push({ role: "system", content: augmentedSystem });
   }
 
   for (const msg of messages) {

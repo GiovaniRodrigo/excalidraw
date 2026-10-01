@@ -317,9 +317,11 @@ export const AIChatWidget: React.FC<{
     let fullAccumulated = "";
 
     try {
+      const canvasContext = getCanvasContext();
       const { content: finalContent, error } = await streamAIChatMessage({
         config: activeLLMConfig,
         systemPrompt: currentAgent.systemPrompt,
+        canvasContext,
         messages: [...previousContext, { role: "user", content }],
         onChunk: (delta) => {
           fullAccumulated += delta;
